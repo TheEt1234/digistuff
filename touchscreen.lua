@@ -140,7 +140,7 @@ local function get_data(meta)
 end
 
 local function create_formspec(meta, data)
-	local input_formspec = meta:get_string("input_formspec") 
+	local input_formspec = meta:get_string("input_formspec")
 	if input_formspec ~= nil and #input_formspec ~= 0 then
 		return input_formspec
 	end
