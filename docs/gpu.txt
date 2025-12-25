@@ -183,7 +183,7 @@ code [string, lua code]: The code of the shader
 The code that you write gets called for each pixel, and has to return the r, g, b values (integers between 0 and 255)
 
 In order to prevent abuse and lag, the shader code has some limitations:
-- The shader can only run for 150*64*64 instructions (this is more than the mesecons luacontroller, but you are not allowed to use the laggy string operation instructions, and in practice it's less)
+- The shader can only run for 200*64*64 instructions (this is more than the mesecons luacontroller, but you are not allowed to use the laggy string operation instructions, and in practice it's less)
 - Declaring strings is not allowed
    - More specifically, you cannot have in your code: " ' [[ [<any amount of equal signs>[
    - **You also cannot have those characters in comments, and you cannot declare multi line comments**
@@ -239,4 +239,14 @@ return red_circle, green_circle, blue_circle
 ```
 
 I am pretty sure you could also run the Conway's Game of Life with this, but that is an excercise for the viewer.
+
+Command: convolutionmatrix
+-------------------------
+See https://en.wikipedia.org/wiki/Kernel_(image_processing)
+
+Allows you to blur/sharpen/edge detection or do other fun stuff on an image using some numbers in a table.
+
+Parameters:
+buffer [integer 0-7]: The buffer to perform the operation on
+matrix [nested 3x3 or 5x5 table, anything else is not accepted]: The convolution matrix/image kernel
 

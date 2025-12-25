@@ -8,7 +8,7 @@ local MAX_COMMANDS = 32
 --  - if a shader is running over a MAX_SIZE*MAX_SIZE image, it will only have 100 instructions to work with
 --  - Shaders cannot do the really expensive instructions/calls to C that mesecons luacontroller can, like string concatination (still a sandbox weakness!) or string.rep("a", 64000), thats a very little amount instructions for a lot more lag
 --  (shaders can mostly do just math, not string manipulation, and not even much table manipulation)
-local MAX_SHADER_INSTRUCTIONS = 150 * (MAX_SIZE * MAX_SIZE)
+local MAX_SHADER_INSTRUCTIONS = 200 * (MAX_SIZE * MAX_SIZE)
 local MAX_SHADER_CODE_LENGTH = 1000
 
 local function explodebits(input, count)
@@ -185,11 +185,24 @@ local function bitwiseblend(srcr, dstr, srcg, dstg, srcb, dstb, mode)
 	return string.format("%02X%02X%02X", implodebits(drbits), implodebits(dgbits), implodebits(dbbits))
 end
 
+local bit_band, bit_rshift = bit.band, bit.rshift -- works in PUC lua too
 local function unpack_color(color)
-	local r = tonumber(string.sub(color, 1, 2), 16)
-	local g = tonumber(string.sub(color, 3, 4), 16)
-	local b = tonumber(string.sub(color, 5, 6), 16)
-	return r, g, b
+	local current_color_number = tonumber(color, 16) -- this is a stich on luaJIT, so tonumber(x, 16) calls should be minimized, ideally replaced
+	return bit_band(bit_rshift(current_color_number, 16), 0xff),
+		bit_band(bit_rshift(current_color_number, 8), 0xff),
+		bit_band(current_color_number, 0xff)
+end
+
+-- To avoid doing tonumber(x, 16) which is slow under luaJIT
+local function unpack_color_with_cache(cache, buffer, x, y)
+	local current_color_number = cache[y][x]
+	if current_color_number == nil then
+		cache[y][x] = tonumber(buffer[y][x], 16)
+		current_color_number = cache[y][x]
+	end
+	return bit_band(bit_rshift(current_color_number, 16), 0xff),
+		bit_band(bit_rshift(current_color_number, 8), 0xff),
+		bit_band(current_color_number, 0xff)
 end
 
 local function blend(src, dst, mode, transparent)
@@ -318,13 +331,7 @@ local function run_shader(env, buffer, new_buffer, f)
 		for x = 1, buffer.xsize do
 			env.x = x
 			env.y = y
-			local current_color = buffer[y][x]
-			local current_color_number = tonumber(current_color, 16) -- a stich on JIT
-			color.r, color.g, color.b = -- works in PUC lua too
-				bit_band(bit_rshift(current_color_number, 16), 0xff),
-				bit_band(bit_rshift(current_color_number, 8), 0xff),
-				bit_band(current_color_number, 0xff)
-
+			color.r, color.g, color.b = unpack_color(buffer[y][x])
 			local r, g, b = f()
 			if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
 				return false,
@@ -728,11 +735,7 @@ local function runcommand(pos, meta, command)
 				tanh = math.tanh,
 			},
 			get_color = function(x, y)
-				local current_color = buffer[y][x]
-				local current_color_number = tonumber(current_color, 16)
-				return bit_band(bit_rshift(current_color_number, 16), 0xff),
-					bit_band(bit_rshift(current_color_number, 8), 0xff),
-					bit_band(current_color_number, 0xff)
+				return unpack_color(buffer[y][x])
 			end,
 
 			xsize = buffer.xsize,
@@ -757,7 +760,73 @@ local function runcommand(pos, meta, command)
 		end
 
 		write_buffer(meta, bufnum, new_buffer)
-		core.debug(os.clock() - t0)
+		core.debug(os.clock() - t0) -- FIXME: DEBUG LOGGING HERE
+	elseif command.command == "convolutionmatrix" then
+		local convolution_matrix = command.matrix
+		if type(convolution_matrix) ~= "table" then
+			return
+		end
+		if type(convolution_matrix[1]) ~= "table" then
+			return
+		end
+		local matrix_size = #convolution_matrix
+		if matrix_size ~= 3 and matrix_size ~= 5 then -- can only be 3x3 or 5x5
+			return
+		end
+
+		for y = 1, matrix_size do
+			if type(convolution_matrix[y]) ~= "table" then
+				return
+			end
+			if #convolution_matrix[y] ~= matrix_size then
+				return
+			end
+			for x = 1, matrix_size do
+				if type(convolution_matrix[y][x]) ~= "number" then
+					return
+				end
+				if core.is_nan(convolution_matrix[y][x]) then
+					return
+				end
+			end
+		end
+
+		local half_matrix_size = math.floor(matrix_size / 2)
+
+		local new_buffer = { xsize = buffer.xsize, ysize = buffer.ysize }
+
+		local t0 = os.clock()
+		local xsize, ysize = buffer.xsize, buffer.ysize
+
+		local number_buffer = {} -- a cache to avoid computing unpack_color, yes it would be wiser to just not use strings but blame the first developer that worked on the digistuff GPU, also yes this SIGNIFICANTLY speeds up calculations at least on luajit
+		for y = 1, ysize do
+			number_buffer[y] = {}
+		end
+		for y = 1, ysize do
+			new_buffer[y] = {}
+			for x = 1, xsize do
+				local r, g, b = 0, 0, 0
+				for y_offset = -half_matrix_size, half_matrix_size do
+					for x_offset = -half_matrix_size, half_matrix_size do
+						local px, py = x + x_offset, y + y_offset
+						if py > 0 and py <= ysize and px > 0 and px <= xsize then
+							local pixel = buffer[py][px]
+							local pxr, pxg, pxb = unpack_color_with_cache(number_buffer, buffer, px, py)
+							local mul_by =
+								convolution_matrix[half_matrix_size + 1 + x_offset][half_matrix_size + 1 + y_offset]
+							r, g, b = r + pxr * mul_by, g + pxg * mul_by, b + pxb * mul_by
+						end
+					end
+				end
+				r = math.min(255, math.max(0, math.floor(r)))
+				g = math.min(255, math.max(0, math.floor(g)))
+				b = math.min(255, math.max(0, math.floor(b)))
+				new_buffer[y][x] = string.format("%02X%02X%02X", r, g, b)
+			end
+		end
+
+		core.debug("Convolution matrix: " .. (os.clock() - t0) * 1000) -- FIXME: DEBUG LOGGING HERE
+		write_buffer(meta, bufnum, new_buffer)
 	end
 end
 
@@ -827,7 +896,7 @@ minetest.register_node("digistuff:gpu", {
 							local ok, errmsg = runcommand(pos, meta, msg[i])
 
 							if ok == false then
-								error(errmsg)
+								error(errmsg) -- FIXME: THIS CAN'T ERROR, IT NEEDS TO SEND BACK TO LUAC
 							end
 						end
 					end
