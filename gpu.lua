@@ -1,11 +1,21 @@
 local font = dofile(minetest.get_modpath("digistuff") .. "/gpu-font.lua")
 local MAX_BUFFERS = 8
+local MAX_SIZE = 64
+local MAX_COMMANDS = 32
+
+-- yes i know it may feel like way too many instructions
+-- but consider:
+--  - if a shader is running over a MAX_SIZE*MAX_SIZE image, it will only have 100 instructions to work with
+--  - Shaders cannot do the really expensive instructions/calls to C that mesecons luacontroller can, like string concatination (still a sandbox weakness!) or string.rep("a", 64000), thats a very little amount instructions for a lot more lag
+--  (shaders can mostly do just math, not string manipulation, and not even much table manipulation)
+local MAX_SHADER_INSTRUCTIONS = 150 * (MAX_SIZE * MAX_SIZE)
+local MAX_SHADER_CODE_LENGTH = 1000
 
 local function explodebits(input, count)
 	local output = {}
 	count = count or 8
 	for i = 0, count - 1 do
-		output[i] = input % (2^(i + 1)) >= 2^i
+		output[i] = input % (2 ^ (i + 1)) >= 2 ^ i
 	end
 	return output
 end
@@ -14,7 +24,7 @@ local function implodebits(input, count)
 	local output = 0
 	count = count or 8
 	for i = 0, count - 1 do
-		output = output + (input[i] and 2^i or 0)
+		output = output + (input[i] and 2 ^ i or 0)
 	end
 	return output
 end
@@ -65,7 +75,7 @@ local function unpackpixel(pack)
 	local block2 = unpacktable[pack:sub(2, 2)] or 0
 	local block3 = unpacktable[pack:sub(3, 3)] or 0
 	local block4 = unpacktable[pack:sub(4, 4)] or 0
-	local out = block1 + (2^6 * block2) + (2^12 * block3) + (2^18 * block4)
+	local out = block1 + (2 ^ 6 * block2) + (2 ^ 12 * block3) + (2 ^ 18 * block4)
 	return string.format("%06X", out)
 end
 
@@ -172,8 +182,7 @@ local function bitwiseblend(srcr, dstr, srcg, dstg, srcb, dstb, mode)
 			dbbits[i] = not (sbbits[i] or dbbits[i])
 		end
 	end
-	return string.format("%02X%02X%02X",
-		implodebits(drbits), implodebits(dgbits), implodebits(dbbits))
+	return string.format("%02X%02X%02X", implodebits(drbits), implodebits(dgbits), implodebits(dbbits))
 end
 
 local function unpack_color(color)
@@ -192,55 +201,35 @@ local function blend(src, dst, mode, transparent)
 	end
 	if op == "normal" then
 		return src
-
 	elseif op == "nop" then
 		return dst
-
 	elseif op == "overlay" then
 		return string.upper(src) == string.upper(transparent) and dst or src
-
 	elseif op == "add" then
 		local r = math.min(255, srcr + dstr)
 		local g = math.min(255, srcg + dstg)
 		local b = math.min(255, srcb + dstb)
 		return string.format("%02X%02X%02X", r, g, b)
-
 	elseif op == "sub" then
 		local r = math.max(0, dstr - srcr)
 		local g = math.max(0, dstg - srcg)
 		local b = math.max(0, dstb - srcb)
 		return string.format("%02X%02X%02X", r, g, b)
-
 	elseif op == "isub" then
 		local r = math.max(0, srcr - dstr)
 		local g = math.max(0, srcg - dstg)
 		local b = math.max(0, srcb - dstb)
 		return string.format("%02X%02X%02X", r, g, b)
-
 	elseif op == "average" then
 		local r = math.min(255, (srcr + dstr) / 2)
 		local g = math.min(255, (srcg + dstg) / 2)
 		local b = math.min(255, (srcb + dstb) / 2)
 		return string.format("%02X%02X%02X", r, g, b)
-
-	elseif op == "and"
-		or op == "or"
-		or op == "xor"
-		or op == "xnor"
-		or op == "not"
-		or op == "nand"
-		or op == "nor"
-	then
+	elseif op == "and" or op == "or" or op == "xor" or op == "xnor" or op == "not" or op == "nand" or op == "nor" then
 		return bitwiseblend(srcr, dstr, srcg, dstg, srcb, dstb, op)
-
-	elseif op == "tohsv"
-		or op == "rgbtohsv"
-	then
+	elseif op == "tohsv" or op == "rgbtohsv" then
 		return string.format("%02X%02X%02X", rgbtohsv(srcr, srcg, srcb))
-
-	elseif op == "torgb"
-		or op == "hsvtorgb"
-	then
+	elseif op == "torgb" or op == "hsvtorgb" then
 		return string.format("%02X%02X%02X", hsvtorgb(srcr, srcg, srcb))
 	end
 
@@ -248,7 +237,8 @@ local function blend(src, dst, mode, transparent)
 end
 
 local function validate_area(buffer, x1, y1, x2, y2, keep_order)
-	if not (buffer and buffer.xsize and buffer.ysize)
+	if
+		not (buffer and buffer.xsize and buffer.ysize)
 		or type(x1) ~= "number"
 		or type(x2) ~= "number"
 		or type(y1) ~= "number"
@@ -279,15 +269,12 @@ local function validate_size(size)
 	if type(size) ~= "number" then
 		return 1
 	end
-	return math.max(1, math.min(64, math.floor(math.abs(size))))
+	return math.max(1, math.min(MAX_SIZE, math.floor(math.abs(size))))
 end
 
 local function validate_color(fillcolor, fallback)
 	fallback = fallback or "000000"
-	if type(fillcolor) ~= "string"
-		or string.len(fillcolor) > 7
-		or string.len(fillcolor) < 6
-	then
+	if type(fillcolor) ~= "string" or string.len(fillcolor) > 7 or string.len(fillcolor) < 6 then
 		fillcolor = fallback
 	end
 	if string.sub(fillcolor, 1, 1) == "#" then
@@ -315,6 +302,60 @@ end
 
 local function write_buffer(meta, bufnum, buffer)
 	meta:set_string("buffer" .. bufnum, minetest.serialize(buffer))
+end
+
+-- Defining functions in functions is bad for JIT so im avoiding it
+local hook = function()
+	debug.sethook()
+	error("Code ran for too many instructions.", 2)
+end
+
+local bit_band, bit_rshift = bit.band, bit.rshift
+
+local function run_shader(env, buffer, new_buffer, f)
+	local color = env.color
+	for y = 1, buffer.ysize do
+		for x = 1, buffer.xsize do
+			env.x = x
+			env.y = y
+			local current_color = buffer[y][x]
+			local current_color_number = tonumber(current_color, 16) -- a stich on JIT
+			color.r, color.g, color.b = -- works in PUC lua too
+				bit_band(bit_rshift(current_color_number, 16), 0xff),
+				bit_band(bit_rshift(current_color_number, 8), 0xff),
+				bit_band(current_color_number, 0xff)
+
+			local r, g, b = f()
+			if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+				return false,
+					"You are supposed to return r,g,b where all of them are numbers, you sent: "
+						.. tostring(r)
+						.. ", "
+						.. tostring(g)
+						.. ", "
+						.. tostring(b)
+			end
+			r, g, b = -- rgb must be an integer between 0 and 255
+				math.min(255, math.max(0, math.floor(r))),
+				math.min(255, math.max(0, math.floor(g))),
+				math.min(255, math.max(0, math.floor(b)))
+
+			r, g, b = r == r and r or 0, g == g and g or 0, b == b and b or 0 -- rgb must not be nan
+
+			local new_color = string.format("%02X%02X%02X", r, g, b)
+			new_buffer[y][x] = new_color
+		end
+	end
+end
+
+local unlimited_run_shader = run_shader
+run_shader = function(env, buffer, new_buffer, f)
+	debug.sethook(hook, "", MAX_SHADER_INSTRUCTIONS)
+	local ok, errmsg = pcall(unlimited_run_shader, env, buffer, new_buffer, f)
+	debug.sethook()
+	if not ok then
+		error(errmsg)
+	end
 end
 
 local function runcommand(pos, meta, command)
@@ -357,16 +398,13 @@ local function runcommand(pos, meta, command)
 			return
 		end
 
-		digilines.receptor_send(pos, digilines.rules.default,
-			command.channel, buffer)
-
+		digilines.receptor_send(pos, digilines.rules.default, command.channel, buffer)
 	elseif command.command == "sendregion" then
 		if type(command.channel) ~= "string" then
 			return
 		end
 
-		x1, y1, x2, y2 = validate_area(buffer,
-			command.x1, command.y1, command.x2, command.y2)
+		x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2)
 
 		if not x1 then
 			return
@@ -381,12 +419,9 @@ local function runcommand(pos, meta, command)
 				tempbuf[dsty][dstx] = buffer[y][x]
 			end
 		end
-		digilines.receptor_send(pos, digilines.rules.default,
-			command.channel, tempbuf)
-
+		digilines.receptor_send(pos, digilines.rules.default, command.channel, tempbuf)
 	elseif command.command == "drawrect" then
-		x1, y1, x2, y2 = validate_area(buffer,
-			command.x1, command.y1, command.x2, command.y2)
+		x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2)
 
 		if not x1 then
 			return
@@ -411,8 +446,7 @@ local function runcommand(pos, meta, command)
 		end
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "drawline" then
-		x1, y1, x2, y2 = validate_area(buffer,
-			command.x1, command.y1, command.x2, command.y2, true)
+		x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2, true)
 
 		if not x1 then
 			return
@@ -467,14 +501,18 @@ local function runcommand(pos, meta, command)
 				plot(x1, y1, math.abs(err - dx + dy) / distance)
 				err2, x1_copy = err, x1
 				if 2 * err2 >= -dx then
-					if x1 == x2 then break end
+					if x1 == x2 then
+						break
+					end
 					if err2 + dy < distance then
 						plot(x1, y1 + slope_y, (err2 + dy) / distance)
 					end
 					err, x1 = err - dy, x1 + slope_x
 				end
 				if 2 * err2 <= dy then
-					if y1 == y2 then break end
+					if y1 == y2 then
+						break
+					end
 					if dx - err2 < distance then
 						plot(x1_copy + slope_x, y1, (dx - err2) / distance)
 					end
@@ -488,12 +526,16 @@ local function runcommand(pos, meta, command)
 				buffer[y1][x1] = color
 				err2 = err * 2
 				if err2 >= dy then
-					if x1 == x2 then break end
+					if x1 == x2 then
+						break
+					end
 					err = err + dy
 					x1 = x1 + slope_x
 				end
 				if err2 <= dx then
-					if y1 == y2 then break end
+					if y1 == y2 then
+						break
+					end
 					err = err + dx
 					y1 = y1 + slope_y
 				end
@@ -510,9 +552,7 @@ local function runcommand(pos, meta, command)
 		buffer[y1][x1] = validate_color(command.color)
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "copy" then
-		if type(command.xsize) ~= "number"
-			or type(command.ysize) ~= "number"
-		then
+		if type(command.xsize) ~= "number" or type(command.ysize) ~= "number" then
 			return
 		end
 
@@ -528,11 +568,9 @@ local function runcommand(pos, meta, command)
 			return
 		end
 
-		x1, y1 = validate_area(sourcebuffer,
-			command.srcx, command.srcy, command.srcx, command.srcy)
+		x1, y1 = validate_area(sourcebuffer, command.srcx, command.srcy, command.srcx, command.srcy)
 
-		x2, y2 = validate_area(destbuffer,
-			command.dstx, command.dsty, command.dstx, command.dsty)
+		x2, y2 = validate_area(destbuffer, command.dstx, command.dsty, command.dstx, command.dsty)
 
 		if not (x1 and x2) then
 			return
@@ -551,18 +589,13 @@ local function runcommand(pos, meta, command)
 			for x = 0, xsize - 1 do
 				px1 = sourcebuffer[y1 + y][x1 + x]
 				px2 = destbuffer[y2 + y][x2 + x]
-				destbuffer[y2 + y][x2 + x] = blend(
-					px1, px2, command.mode, transparent)
+				destbuffer[y2 + y][x2 + x] = blend(px1, px2, command.mode, transparent)
 			end
 		end
 		write_buffer(meta, dst, destbuffer)
 	elseif command.command == "load" then
 		x1, y1 = validate_area(buffer, command.x, command.y, command.x, command.y)
-		if not x1
-			or type(command.data) ~= "table"
-			or type(command.data[1]) ~= "table"
-			or #command.data[1] < 1
-		then
+		if not x1 or type(command.data) ~= "table" or type(command.data[1]) ~= "table" or #command.data[1] < 1 then
 			return
 		end
 
@@ -573,15 +606,15 @@ local function runcommand(pos, meta, command)
 				for x = 1, xsize do
 					-- slightly different behaviour from before refactor:
 					-- illegal values are now set to '000000' instead of being skipped
-					buffer[y1 + y - 1][x1 + x - 1] = validate_color(
-						command.data[y][x])
+					buffer[y1 + y - 1][x1 + x - 1] = validate_color(command.data[y][x])
 				end
 			end
 		end
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "text" then
 		x1, y1 = validate_area(buffer, command.x, command.y, command.x, command.y)
-		if not x1
+		if
+			not x1
 			or x1 > buffer.xsize
 			or y1 > buffer.ysize
 			or type(command.text) ~= "string"
@@ -598,12 +631,9 @@ local function runcommand(pos, meta, command)
 			for chary = 1, 12 do
 				for charx = 1, 5 do
 					x2 = x1 + (i * 6 - 6)
-					if char[chary][charx] and y1 + chary - 1 <= buffer.ysize
-						and x2 + charx - 1 <= buffer.xsize
-					then
+					if char[chary][charx] and y1 + chary - 1 <= buffer.ysize and x2 + charx - 1 <= buffer.xsize then
 						px = buffer[y1 + chary - 1][x2 + charx - 1]
-						buffer[y1 + chary - 1][x2 + charx - 1] = blend(
-							color, px, command.mode, "")
+						buffer[y1 + chary - 1][x2 + charx - 1] = blend(color, px, command.mode, "")
 					end
 				end
 			end
@@ -620,13 +650,10 @@ local function runcommand(pos, meta, command)
 			end
 		end
 		local packeddata = table.concat(packedtable, "")
-		digilines.receptor_send(pos, digilines.rules.default,
-			command.channel, packeddata)
+		digilines.receptor_send(pos, digilines.rules.default, command.channel, packeddata)
 	elseif command.command == "loadpacked" then
 		x1, y1 = validate_area(buffer, command.x, command.y, command.x, command.y)
-		if not x1
-			or type(command.data) ~= "string"
-		then
+		if not x1 or type(command.data) ~= "string" then
 			return
 		end
 
@@ -644,6 +671,93 @@ local function runcommand(pos, meta, command)
 			end
 		end
 		write_buffer(meta, bufnum, buffer)
+	elseif command.command == "fakeshader" then
+		if type(command.code) ~= "string" then
+			return false, "No code provided"
+		end
+		if #command.code > MAX_SHADER_CODE_LENGTH then
+			return false, "Code too large"
+		end
+
+		if command.code:find('"', 1, true) or command.code:find("%[=*%[") then
+			return false, "Cannot create strings in shader code"
+		end
+
+		-- set up the sandbox
+		local f, errmsg = loadstring(command.code)
+		if not f or errmsg then
+			return false, errmsg
+		end
+
+		if core.global_exists("jit") then
+			jit.off(f, true)
+		end -- debug count hooks don't work with JIT, so turn it off for that function
+		-- alternatively we would have to ban loops or parse the code, or involve a lua parser into this, i dont feel like doing that.
+
+		local env = {
+			math = {
+				abs = math.abs,
+				acos = math.acos,
+				asin = math.asin,
+				atan = math.atan,
+				atan2 = math.atan2,
+				ceil = math.ceil,
+				cos = math.cos,
+				cosh = math.cosh,
+				deg = math.deg,
+				exp = math.exp,
+				floor = math.floor,
+				fmod = math.fmod,
+				frexp = math.frexp,
+				huge = math.huge,
+				ldexp = math.ldexp,
+				log = math.log,
+				log10 = math.log10,
+				max = math.max,
+				min = math.min,
+				modf = math.modf,
+				pi = math.pi,
+				pow = math.pow,
+				rad = math.rad,
+				random = math.random,
+				-- randomseed = math.randomseed,
+				sin = math.sin,
+				sinh = math.sinh,
+				sqrt = math.sqrt,
+				tan = math.tan,
+				tanh = math.tanh,
+			},
+			get_color = function(x, y)
+				local current_color = buffer[y][x]
+				local current_color_number = tonumber(current_color, 16)
+				return bit_band(bit_rshift(current_color_number, 16), 0xff),
+					bit_band(bit_rshift(current_color_number, 8), 0xff),
+					bit_band(current_color_number, 0xff)
+			end,
+
+			xsize = buffer.xsize,
+			ysize = buffer.ysize,
+
+			-- Variables that change for each pixel:
+			color = {},
+			x = 0,
+			y = 0,
+		}
+		setfenv(f, env)
+
+		local new_buffer = { xsize = buffer.xsize, ysize = buffer.ysize }
+		for y = 1, buffer.ysize do
+			new_buffer[y] = {}
+		end
+
+		local t0 = os.clock()
+		local ok, errmsg = pcall(run_shader, env, buffer, new_buffer, f) -- nested pcall because that is how mesecons does it and i already had a nightmare bug where the debug hook somehow escaped containment and started error'ing in random functions
+		if not ok then
+			return ok, errmsg
+		end
+
+		write_buffer(meta, bufnum, new_buffer)
+		core.debug(os.clock() - t0)
 	end
 end
 
@@ -661,24 +775,24 @@ minetest.register_node("digistuff:gpu", {
 		"jeija_microcontroller_sides.png",
 		"jeija_microcontroller_sides.png",
 		"jeija_microcontroller_sides.png",
-		"jeija_microcontroller_sides.png"
+		"jeija_microcontroller_sides.png",
 	},
 	inventory_image = "digistuff_gpu_top.png",
 	drawtype = "nodebox",
 	selection_box = {
 		--From luacontroller
 		type = "fixed",
-		fixed = { -8/16, -8/16, -8/16, 8/16, -5/16, 8/16 },
+		fixed = { -8 / 16, -8 / 16, -8 / 16, 8 / 16, -5 / 16, 8 / 16 },
 	},
 	_digistuff_channelcopier_fieldname = "channel",
 	node_box = {
 		--From Luacontroller
 		type = "fixed",
 		fixed = {
-			{ -8/16, -8/16, -8/16, 8/16, -7/16, 8/16 }, -- Bottom slab
-			{ -5/16, -7/16, -5/16, 5/16, -6/16, 5/16 }, -- Circuit board
-			{ -3/16, -6/16, -3/16, 3/16, -5/16, 3/16 }, -- IC
-		}
+			{ -8 / 16, -8 / 16, -8 / 16, 8 / 16, -7 / 16, 8 / 16 }, -- Bottom slab
+			{ -5 / 16, -7 / 16, -5 / 16, 5 / 16, -6 / 16, 5 / 16 }, -- Circuit board
+			{ -3 / 16, -6 / 16, -3 / 16, 3 / 16, -5 / 16, 3 / 16 }, -- IC
+		},
 	},
 	paramtype = "light",
 	sunlight_propagates = true,
@@ -690,9 +804,7 @@ minetest.register_node("digistuff:gpu", {
 		end
 
 		local name = sender:get_player_name()
-		if minetest.is_protected(pos, name)
-			and not minetest.check_player_privs(name, { protection_bypass = true })
-		then
+		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, { protection_bypass = true }) then
 			minetest.record_protection_violation(pos, name)
 			return
 		end
@@ -705,22 +817,24 @@ minetest.register_node("digistuff:gpu", {
 		effector = {
 			action = function(pos, node, channel, msg)
 				local meta = minetest.get_meta(pos)
-				if meta:get_string("channel") ~= channel
-					or type(msg) ~= "table"
-				then
+				if meta:get_string("channel") ~= channel or type(msg) ~= "table" then
 					return
 				end
 
 				if type(msg[1]) == "table" then
-					for i = 1, 32 do
+					for i = 1, MAX_COMMANDS do
 						if type(msg[i]) == "table" then
-							runcommand(pos, meta, msg[i])
+							local ok, errmsg = runcommand(pos, meta, msg[i])
+
+							if ok == false then
+								error(errmsg)
+							end
 						end
 					end
 				else
 					runcommand(pos, meta, msg)
 				end
-			end
+			end,
 		},
 	},
 })
@@ -732,9 +846,8 @@ minetest.register_craft({
 		{
 			"digilines:wire_std_00000000",
 			"mesecons_luacontroller:luacontroller0000",
-			"digilines:wire_std_00000000"
+			"digilines:wire_std_00000000",
 		},
-		{ "dye:red", "dye:green", "dye:blue" }
-	}
+		{ "dye:red", "dye:green", "dye:blue" },
+	},
 })
-

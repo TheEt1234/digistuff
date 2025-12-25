@@ -170,3 +170,73 @@ y [integer 1-64]: The Y position of the top of the image.
 xsize [integer 1-64]: The width of the image. Must be the same as the original image or the image will be severely distorted.
 ysize [integer 1-64]: The height of the image. Should be the same as the original image.
 data [string]: The packed image to load.
+
+Command: fakeshader
+-------------------
+
+Allows you to run code that executes for every pixel in a buffer. It isn't a "real" shader because it isn't ran on the GPU and it is ran only on a CPU single thread.
+
+Parameters:
+buffer [integer 0-7]: The buffer to run the shader on
+code [string, lua code]: The code of the shader
+
+The code that you write gets called for each pixel, and has to return the r, g, b values (integers between 0 and 255)
+
+In order to prevent abuse and lag, the shader code has some limitations:
+- The shader can only run for 150*64*64 instructions (this is more than the mesecons luacontroller, but you are not allowed to use the laggy string operation instructions, and in practice it's less)
+- Declaring strings is not allowed
+   - More specifically, you cannot have in your code: " ' [[ [<any amount of equal signs>[
+   - **You also cannot have those characters in comments, and you cannot declare multi line comments**
+   - If possible, try minimizing the amount of comments, so you don't accidentally run into this restriction
+   - This was done because it would be difficult to limit string concatination and declaring long strings if they were allowed.
+- The maximum length of your code is 1000 characters
+
+The environment of shaders (things avaliable in shader code):
+- math: All standard math functions as documented in the lua manual, except math.randomseed
+- xsize: The width of the buffer
+- ysize: the height of the buffer
+- x: The current x coordinate of the pixel that is being processed
+- y: The current y coordinate of the pixel that is being processed
+- color: the current color of the pixel being processed
+- r, g, b = get_color(x, y): Allows you to get a color from the buffer
+
+
+Shader code examples (inside "```"):
+
+Gradient:
+```
+return (x/xsize)*255, (y/ysize)*255, 0
+```
+
+Grid:
+```
+return 255*math.sin(x/2), 255*math.sin(y/2), 0
+```
+
+Noise:
+```
+return math.random()*255, math.random()*255, math.random()*255
+```
+
+Classic showcase of how RGB works:
+```
+local r = 16 -- radius
+local dist = 10 -- distance between circles
+local cX, cY = x-(xsize/2), y-(ysize/2) -- center X, center Y
+local r2 = r^2
+
+local red_circle   = r2 - (cX^2+(cY+dist)^2) -- thanks pythagoras
+local green_circle = r2 - ((cX+dist)^2+cY^2)
+local blue_circle  = r2 - ((cX-dist)^2+cY^2)
+
+-- make them solid
+red_circle, green_circle, blue_circle =
+ math.min(1, red_circle)*255,
+ math.min(1, green_circle)*255,
+ math.min(1, blue_circle)*255
+
+return red_circle, green_circle, blue_circle
+```
+
+I am pretty sure you could also run the Conway's Game of Life with this, but that is an excercise for the viewer.
+
