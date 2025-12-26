@@ -48,9 +48,7 @@ unpacktable["/"] = 63
 
 local function packpixel(pixel)
 	pixel = tonumber(pixel, 16)
-	if not pixel then
-		return "AAAA"
-	end
+	if not pixel then return "AAAA" end
 
 	local bits = explodebits(pixel, 24)
 	local block1 = {}
@@ -101,9 +99,7 @@ local function rgbtohsv(r, g, b)
 		hue = hue / 360
 	end
 	local sat = 0
-	if max > 0 then
-		sat = delta / max
-	end
+	if max > 0 then sat = delta / max end
 	return math.floor(hue * 255), math.floor(sat * 255), math.floor(max * 255)
 end
 
@@ -187,13 +183,14 @@ end
 
 local bit_band, bit_rshift = bit.band, bit.rshift -- works in PUC lua too
 local function unpack_color(color)
-	local current_color_number = tonumber(color, 16) -- this is a stich on luaJIT, so tonumber(x, 16) calls should be minimized, ideally replaced
+	local current_color_number = tonumber(color, 16) -- this is a "stich" on luaJIT, so tonumber(x, 16) calls should be minimized, ideally replaced, ideally this all should not be needed and the color would just be a number
 	return bit_band(bit_rshift(current_color_number, 16), 0xff),
 		bit_band(bit_rshift(current_color_number, 8), 0xff),
 		bit_band(current_color_number, 0xff)
 end
 
--- To avoid doing tonumber(x, 16) which is slow under luaJIT
+-- To avoid doing tonumber(x, 16) which is slow under luaJIT (not like its slower than PUC lua, but that its not as fast as it could be)
+-- Only use this function when you have to get a color multiple times from the same pixel, from the same buffer
 local function unpack_color_with_cache(cache, buffer, x, y)
 	local current_color_number = cache[y][x]
 	if current_color_number == nil then
@@ -209,9 +206,7 @@ local function blend(src, dst, mode, transparent)
 	local srcr, srcg, srcb = unpack_color(src)
 	local dstr, dstg, dstb = unpack_color(dst)
 	local op = "normal"
-	if type(mode) == "string" then
-		op = string.lower(mode)
-	end
+	if type(mode) == "string" then op = string.lower(mode) end
 	if op == "normal" then
 		return src
 	elseif op == "nop" then
@@ -265,9 +260,7 @@ local function validate_area(buffer, x1, y1, x2, y2, keep_order)
 	y1 = math.max(1, math.min(buffer.ysize, math.floor(y1)))
 	y2 = math.max(1, math.min(buffer.ysize, math.floor(y2)))
 
-	if keep_order then
-		return x1, y1, x2, y2
-	end
+	if keep_order then return x1, y1, x2, y2 end
 
 	if x1 > x2 then
 		x1, x2 = x2, x1
@@ -279,9 +272,7 @@ local function validate_area(buffer, x1, y1, x2, y2, keep_order)
 end
 
 local function validate_size(size)
-	if type(size) ~= "number" then
-		return 1
-	end
+	if type(size) ~= "number" then return 1 end
 	return math.max(1, math.min(MAX_SIZE, math.floor(math.abs(size))))
 end
 
@@ -290,22 +281,31 @@ local function validate_color(fillcolor, fallback)
 	if type(fillcolor) ~= "string" or string.len(fillcolor) > 7 or string.len(fillcolor) < 6 then
 		fillcolor = fallback
 	end
-	if string.sub(fillcolor, 1, 1) == "#" then
-		fillcolor = string.sub(fillcolor, 2, 7)
-	end
-	if not tonumber(fillcolor, 16) then
-		fillcolor = fallback
-	end
+	if string.sub(fillcolor, 1, 1) == "#" then fillcolor = string.sub(fillcolor, 2, 7) end
+	if not tonumber(fillcolor, 16) then fillcolor = fallback end
 	return fillcolor
 end
 
 local function validate_buffer_address(bufnum)
-	if type(bufnum) ~= "number" then
-		return
-	end
+	if type(bufnum) ~= "number" then return end
 
 	bufnum = math.floor(math.abs(bufnum))
 	return MAX_BUFFERS > bufnum and bufnum or nil
+end
+
+local function validate_matrix(matrix, valid_sizes)
+	if type(matrix) ~= "table" then return false end
+	if not valid_sizes[#matrix] then return false end
+	for y = 1, #matrix do
+		local row = matrix[y]
+		if type(row) ~= "table" then return false end
+		if #row ~= #matrix then return false end
+		for x = 1, #matrix do
+			local num = matrix[y][x]
+			if type(num) ~= "number" then return end
+		end
+	end
+	return true
 end
 
 local function read_buffer(meta, bufnum)
@@ -322,8 +322,6 @@ local hook = function()
 	debug.sethook()
 	error("Code ran for too many instructions.", 2)
 end
-
-local bit_band, bit_rshift = bit.band, bit.rshift
 
 local function run_shader(env, buffer, new_buffer, f)
 	local color = env.color
@@ -355,35 +353,140 @@ local function run_shader(env, buffer, new_buffer, f)
 	end
 end
 
-local unlimited_run_shader = run_shader
+local unlimited_run_shader = run_shader -- as in, there are no limits
 run_shader = function(env, buffer, new_buffer, f)
 	debug.sethook(hook, "", MAX_SHADER_INSTRUCTIONS)
 	local ok, errmsg = pcall(unlimited_run_shader, env, buffer, new_buffer, f)
 	debug.sethook()
-	if not ok then
-		error(errmsg)
+	if not ok then error(errmsg) end
+end
+
+local function linear_transform(x, y, matrix)
+	return (x * matrix[1][1]) + (y * matrix[1][2]), (x * matrix[2][1]) + (y * matrix[2][2])
+end
+
+local function affine_transform(x, y, matrix)
+	local new_x = (x * matrix[1][1]) + (y * matrix[1][2]) + matrix[1][3]
+	local new_y = (x * matrix[2][1]) + (y * matrix[2][2]) + matrix[2][3]
+	local new_z = (x * matrix[3][1]) + (y * matrix[3][2]) + matrix[3][3]
+	return new_x / new_z, new_y / new_z
+end
+
+-- LLM disclosure: this function was made with significant help from chatGPT
+local function invert_2x2_matrix(matrix)
+	local a, b, c, d = matrix[1][1], matrix[1][2], matrix[2][1], matrix[2][2]
+
+	local det = (a * d) - (b * c)
+	if det == 0 then return matrix end
+
+	local inv_det = 1 / det
+	local new_matrix = {
+		{ d * inv_det, -b * inv_det },
+		{ -c * inv_det, a * inv_det },
+	}
+	return new_matrix
+end
+
+-- LLM disclosure: this function was made with significant help from chatGPT
+-- the reason i don't have a generic invert_matrix function is because it looks a lot more complicated
+local function invert_3x3_matrix(m)
+	local a, b, c = m[1][1], m[1][2], m[1][3]
+	local d, e, f = m[2][1], m[2][2], m[2][3]
+	local g, h, i = m[3][1], m[3][2], m[3][3]
+
+	local det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+	if det == 0 then return m end
+
+	local inv_det = 1 / det
+	return {
+		{ (e * i - f * h) * inv_det, (c * h - b * i) * inv_det, (b * f - c * e) * inv_det },
+		{ (f * g - d * i) * inv_det, (a * i - c * g) * inv_det, (c * d - a * f) * inv_det },
+		{ (d * h - e * g) * inv_det, (b * g - a * h) * inv_det, (a * e - b * d) * inv_det },
+	}
+end
+
+-- Thanks wikipedia https://en.wikipedia.org/wiki/Bilinear_interpolation
+-- i hope i implemented it correctly
+local function bilinear_interpolation(buffer, cache, x, y)
+	if buffer[y] and buffer[y][x] then return buffer[y][x] end
+	local x1, y1 = math.floor(x), math.floor(y)
+	local x2, y2 = math.ceil(x), math.ceil(y)
+	if not (buffer[y2] and buffer[y1]) then return end
+
+	local q11, q12, q21, q22 = buffer[y1][x1], buffer[y2][x1], buffer[y1][x2], buffer[y2][x2]
+
+	if not (q11 and q21 and q12 and q22) then return end
+
+	if q11 == q12 == q21 == q22 then return q11 end
+
+	-- i don't want tables as i fear the performance of them might be horrible
+	local q11_r, q11_g, q11_b = unpack_color_with_cache(cache, buffer, x1, y1)
+	local q12_r, q12_g, q12_b = unpack_color_with_cache(cache, buffer, x2, y1)
+	local q21_r, q21_g, q21_b = unpack_color_with_cache(cache, buffer, x1, y2)
+	local q22_r, q22_g, q22_b = unpack_color_with_cache(cache, buffer, x2, y2)
+
+	local red, green, blue
+	if x1 == x2 then
+		local t = (y - y1) / (y2 - y1)
+		red = q11_r + (q12_r - q11_r) * t
+		green = q11_g + (q12_g - q11_g) * t
+		blue = q11_b + (q12_b - q11_b) * t
+	elseif y1 == y2 then
+		local t = (x - x1) / (x2 - x1)
+		red = q11_r + (q21_r - q11_r) * t
+		green = q11_g + (q21_g - q11_g) * t
+		blue = q11_b + (q21_b - q11_b) * t
+	else
+		local a, b, c, d =
+			(x2 - x) / (x2 - x1), -- (a comment was placed here so that stylua can't inline this)
+			(x - x1) / (x2 - x1),
+			(y2 - y) / (y2 - y1),
+			(y - y1) / (y2 - y1)
+
+		local p1, p2
+
+		-- this is for each channel, im avoiding an ipairs loop for performance
+
+		p1 = a * q11_r + b * q21_r
+		p2 = a * q12_r + b * q22_r
+		red = c * p1 + d * p2
+
+		p1 = a * q11_g + b * q21_g
+		p2 = a * q12_g + b * q22_g
+		green = c * p1 + d * p2
+
+		p1 = a * q11_b + b * q21_b
+		p2 = a * q12_b + b * q22_b
+		blue = c * p1 + d * p2
 	end
+
+	red, green, blue =
+		math.min(255, math.max(0, math.floor(red))),
+		math.min(255, math.max(0, math.floor(green))),
+		math.min(255, math.max(0, math.floor(blue)))
+	if red ~= red or green ~= green or blue ~= blue then -- NAN somehow?
+		return
+	end
+	return string.format("%02X%02X%02X", red, green, blue)
+end
+
+local function nearest_neighbor(buffer, cache, x, y)
+	if buffer[math.round(y)] then return buffer[math.round(y)][math.round(x)] end
 end
 
 local function runcommand(pos, meta, command)
-	if type(command) ~= "table" then
-		return
-	end
+	if type(command) ~= "table" then return end
 
 	local bufnum
 	if command.command ~= "copy" then
 		bufnum = validate_buffer_address(command.buffer)
-		if not bufnum then
-			return
-		end
+		if not bufnum then return end
 	end
 
 	local buffer
 	if command.command ~= "createbuffer" and command.command ~= "copy" then
 		buffer = read_buffer(meta, bufnum)
-		if not buffer then
-			return
-		end
+		if not buffer then return end
 	end
 
 	local xsize, ysize, x1, x2, y1, y2
@@ -401,21 +504,15 @@ local function runcommand(pos, meta, command)
 		end
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "send" then
-		if type(command.channel) ~= "string" then
-			return
-		end
+		if type(command.channel) ~= "string" then return end
 
 		digilines.receptor_send(pos, digilines.rules.default, command.channel, buffer)
 	elseif command.command == "sendregion" then
-		if type(command.channel) ~= "string" then
-			return
-		end
+		if type(command.channel) ~= "string" then return end
 
 		x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2)
 
-		if not x1 then
-			return
-		end
+		if not x1 then return end
 
 		local tempbuf, dstx, dsty = {}
 		for y = y1, y2 do
@@ -430,9 +527,7 @@ local function runcommand(pos, meta, command)
 	elseif command.command == "drawrect" then
 		x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2)
 
-		if not x1 then
-			return
-		end
+		if not x1 then return end
 
 		fillcolor = validate_color(command.fill)
 		edgecolor = validate_color(command.edge, fillcolor)
@@ -455,9 +550,7 @@ local function runcommand(pos, meta, command)
 	elseif command.command == "drawline" then
 		x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2, true)
 
-		if not x1 then
-			return
-		end
+		if not x1 then return end
 
 		color = validate_color(command.color)
 
@@ -508,21 +601,13 @@ local function runcommand(pos, meta, command)
 				plot(x1, y1, math.abs(err - dx + dy) / distance)
 				err2, x1_copy = err, x1
 				if 2 * err2 >= -dx then
-					if x1 == x2 then
-						break
-					end
-					if err2 + dy < distance then
-						plot(x1, y1 + slope_y, (err2 + dy) / distance)
-					end
+					if x1 == x2 then break end
+					if err2 + dy < distance then plot(x1, y1 + slope_y, (err2 + dy) / distance) end
 					err, x1 = err - dy, x1 + slope_x
 				end
 				if 2 * err2 <= dy then
-					if y1 == y2 then
-						break
-					end
-					if dx - err2 < distance then
-						plot(x1_copy + slope_x, y1, (dx - err2) / distance)
-					end
+					if y1 == y2 then break end
+					if dx - err2 < distance then plot(x1_copy + slope_x, y1, (dx - err2) / distance) end
 					err, y1 = err + dx, y1 + slope_y
 				end
 			end
@@ -533,16 +618,12 @@ local function runcommand(pos, meta, command)
 				buffer[y1][x1] = color
 				err2 = err * 2
 				if err2 >= dy then
-					if x1 == x2 then
-						break
-					end
+					if x1 == x2 then break end
 					err = err + dy
 					x1 = x1 + slope_x
 				end
 				if err2 <= dx then
-					if y1 == y2 then
-						break
-					end
+					if y1 == y2 then break end
 					err = err + dx
 					y1 = y1 + slope_y
 				end
@@ -552,36 +633,26 @@ local function runcommand(pos, meta, command)
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "drawpoint" then
 		x1, y1 = validate_area(buffer, command.x, command.y, command.x, command.y)
-		if not x1 then
-			return
-		end
+		if not x1 then return end
 
 		buffer[y1][x1] = validate_color(command.color)
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "copy" then
-		if type(command.xsize) ~= "number" or type(command.ysize) ~= "number" then
-			return
-		end
+		if type(command.xsize) ~= "number" or type(command.ysize) ~= "number" then return end
 
 		local src = validate_buffer_address(command.src)
 		local dst = validate_buffer_address(command.dst)
-		if not (src and dst) then
-			return
-		end
+		if not (src and dst) then return end
 
 		local sourcebuffer = read_buffer(meta, src)
 		local destbuffer = read_buffer(meta, dst)
-		if not (sourcebuffer and destbuffer) then
-			return
-		end
+		if not (sourcebuffer and destbuffer) then return end
 
 		x1, y1 = validate_area(sourcebuffer, command.srcx, command.srcy, command.srcx, command.srcy)
 
 		x2, y2 = validate_area(destbuffer, command.dstx, command.dsty, command.dstx, command.dsty)
 
-		if not (x1 and x2) then
-			return
-		end
+		if not (x1 and x2) then return end
 
 		-- clamp size to source and offset
 		xsize = math.min(sourcebuffer.xsize - x1 + 1, validate_size(command.xsize))
@@ -647,9 +718,7 @@ local function runcommand(pos, meta, command)
 		end
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "sendpacked" then
-		if type(command.channel) ~= "string" then
-			return
-		end
+		if type(command.channel) ~= "string" then return end
 		local packedtable = {}
 		for y = 1, buffer.ysize do
 			for x = 1, buffer.xsize do
@@ -660,9 +729,7 @@ local function runcommand(pos, meta, command)
 		digilines.receptor_send(pos, digilines.rules.default, command.channel, packeddata)
 	elseif command.command == "loadpacked" then
 		x1, y1 = validate_area(buffer, command.x, command.y, command.x, command.y)
-		if not x1 or type(command.data) ~= "string" then
-			return
-		end
+		if not x1 or type(command.data) ~= "string" then return end
 
 		-- clamp size to buffer size
 		xsize = math.min(buffer.xsize - x1 + 1, validate_size(command.xsize))
@@ -679,12 +746,8 @@ local function runcommand(pos, meta, command)
 		end
 		write_buffer(meta, bufnum, buffer)
 	elseif command.command == "fakeshader" then
-		if type(command.code) ~= "string" then
-			return false, "No code provided"
-		end
-		if #command.code > MAX_SHADER_CODE_LENGTH then
-			return false, "Code too large"
-		end
+		if type(command.code) ~= "string" then return false, "No code provided" end
+		if #command.code > MAX_SHADER_CODE_LENGTH then return false, "Code too large" end
 
 		if command.code:find('"', 1, true) or command.code:find("%[=*%[") then
 			return false, "Cannot create strings in shader code"
@@ -692,13 +755,9 @@ local function runcommand(pos, meta, command)
 
 		-- set up the sandbox
 		local f, errmsg = loadstring(command.code)
-		if not f or errmsg then
-			return false, errmsg
-		end
+		if not f or errmsg then return false, errmsg end
 
-		if core.global_exists("jit") then
-			jit.off(f, true)
-		end -- debug count hooks don't work with JIT, so turn it off for that function
+		if core.global_exists("jit") then jit.off(f, true) end -- debug count hooks don't work with JIT, so turn it off for that function
 		-- alternatively we would have to ban loops or parse the code, or involve a lua parser into this, i dont feel like doing that.
 
 		local env = {
@@ -755,41 +814,13 @@ local function runcommand(pos, meta, command)
 
 		local t0 = os.clock()
 		local ok, errmsg = pcall(run_shader, env, buffer, new_buffer, f) -- nested pcall because that is how mesecons does it and i already had a nightmare bug where the debug hook somehow escaped containment and started error'ing in random functions
-		if not ok then
-			return ok, errmsg
-		end
+		if not ok then return ok, errmsg end
 
 		write_buffer(meta, bufnum, new_buffer)
-		core.debug(os.clock() - t0) -- FIXME: DEBUG LOGGING HERE
 	elseif command.command == "convolutionmatrix" then
 		local convolution_matrix = command.matrix
-		if type(convolution_matrix) ~= "table" then
-			return
-		end
-		if type(convolution_matrix[1]) ~= "table" then
-			return
-		end
+		if not validate_matrix(convolution_matrix, { [3] = true, [5] = true }) then return end
 		local matrix_size = #convolution_matrix
-		if matrix_size ~= 3 and matrix_size ~= 5 then -- can only be 3x3 or 5x5
-			return
-		end
-
-		for y = 1, matrix_size do
-			if type(convolution_matrix[y]) ~= "table" then
-				return
-			end
-			if #convolution_matrix[y] ~= matrix_size then
-				return
-			end
-			for x = 1, matrix_size do
-				if type(convolution_matrix[y][x]) ~= "number" then
-					return
-				end
-				if core.is_nan(convolution_matrix[y][x]) then
-					return
-				end
-			end
-		end
 
 		local half_matrix_size = math.floor(matrix_size / 2)
 
@@ -810,7 +841,6 @@ local function runcommand(pos, meta, command)
 					for x_offset = -half_matrix_size, half_matrix_size do
 						local px, py = x + x_offset, y + y_offset
 						if py > 0 and py <= ysize and px > 0 and px <= xsize then
-							local pixel = buffer[py][px]
 							local pxr, pxg, pxb = unpack_color_with_cache(number_buffer, buffer, px, py)
 							local mul_by =
 								convolution_matrix[half_matrix_size + 1 + x_offset][half_matrix_size + 1 + y_offset]
@@ -827,6 +857,65 @@ local function runcommand(pos, meta, command)
 
 		core.debug("Convolution matrix: " .. (os.clock() - t0) * 1000) -- FIXME: DEBUG LOGGING HERE
 		write_buffer(meta, bufnum, new_buffer)
+	elseif command.command == "transform" then
+		local matrix = command.matrix -- 2x2 if linear, 3x3 if affine
+		if not validate_matrix(matrix, { [2] = true, [3] = true }) then return end
+
+		local x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2, false)
+		if not x1 then return end
+		local transparent = validate_color(command.transparent, "#000000")
+		local interpolation = command.interpolation
+		local interpolate = bilinear_interpolation
+		if interpolation == false then interpolate = nearest_neighbor end
+
+		local transform = #matrix == 2 and linear_transform or affine_transform
+		if #matrix == 2 then
+			matrix = invert_2x2_matrix(matrix)
+		elseif #matrix == 3 then
+			matrix = invert_3x3_matrix(matrix)
+		end
+
+		-- center_x/center_y can be any number, even completely outside of the buffer
+		local center_x, center_y = command.center_x or 0, command.center_y or 0
+		if type(center_y) ~= "number" then return end
+		if type(center_x) ~= "number" then return end
+
+		local changed_buffer = {} -- not a buffer as it doesnt have xsize, ysize
+		local cache = {}
+
+		local t0 = os.clock()
+		for y = y1, y2 do
+			changed_buffer[y] = {}
+			cache[y] = {}
+		end
+
+		for y = y1, y2 do
+			for x = x1, x2 do
+				local new_x, new_y = transform(x - center_x, y - center_y, matrix)
+				new_x, new_y = new_x + center_x, new_y + center_y
+				if new_x == new_x and new_y == new_y then -- checking against NaN
+					local color = interpolate(buffer, cache, new_x, new_y)
+					if color and color ~= transparent then changed_buffer[y][x] = color end
+				end
+			end
+		end
+
+		for y = y1, y2 do
+			for x = x1, x2 do
+				buffer[y][x] = transparent
+			end
+		end
+
+		--- layer
+		for y = 1, buffer.ysize do
+			for x = 1, buffer.xsize do
+				buffer[y][x] = changed_buffer[y][x] or buffer[y][x]
+			end
+		end
+
+		core.debug("Transform: " .. (os.clock() - t0) * 1000) -- FIXME: DEBUG LOGGING
+
+		write_buffer(meta, bufnum, buffer)
 	end
 end
 
@@ -868,9 +957,7 @@ minetest.register_node("digistuff:gpu", {
 	on_receive_fields = function(pos, formname, fields, sender)
 		-- Below link to lua_api.md says: not to check formname
 		-- https://github.com/minetest/minetest/blob/2efd0996e61fe82a4922224fa8c039116281d345/doc/lua_api.md?plain=1#L9674
-		if not fields.channel then
-			return
-		end
+		if not fields.channel then return end
 
 		local name = sender:get_player_name()
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, { protection_bypass = true }) then
@@ -886,9 +973,7 @@ minetest.register_node("digistuff:gpu", {
 		effector = {
 			action = function(pos, node, channel, msg)
 				local meta = minetest.get_meta(pos)
-				if meta:get_string("channel") ~= channel or type(msg) ~= "table" then
-					return
-				end
+				if meta:get_string("channel") ~= channel or type(msg) ~= "table" then return end
 
 				if type(msg[1]) == "table" then
 					for i = 1, MAX_COMMANDS do

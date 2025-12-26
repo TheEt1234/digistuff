@@ -244,9 +244,52 @@ Command: convolutionmatrix
 -------------------------
 See https://en.wikipedia.org/wiki/Kernel_(image_processing)
 
-Allows you to blur/sharpen/edge detection or do other fun stuff on an image using some numbers in a table.
+Allows you to blur/sharpen/edge detection or do other fun stuff on an image using some numbers in a table. Feel free to experiment.
 
 Parameters:
 buffer [integer 0-7]: The buffer to perform the operation on
-matrix [nested 3x3 or 5x5 table, anything else is not accepted]: The convolution matrix/image kernel
+matrix [nested 3x3 or 5x5 table]: The convolution matrix/image kernel
 
+Example:
+{
+   command = "convolutionmatrix",
+   buffer = 0,
+   matrix = {
+      { 0, 1  , 0},
+      { 1,-3.8, 1},
+      { 0, 1  , 0}
+   }
+}
+
+Command: transform
+------------------
+Allows you to rotate/shear/scale/move an area of the buffer.
+
+See:
+https://en.wikipedia.org/wiki/Affine_transformation#Image_transformation
+https://en.wikipedia.org/wiki/Rotation_matrix
+
+Parameters:
+buffer [integer 0-7]: The buffer to perform the operation on.
+x1 [integer 0-64]: x1, y1, x2, y2 will be the region that the transform will operate on.
+y1 [integer 0-64]
+x2 [integer 0-64]
+y2 [integer 0-64]
+matrix [2x2 nested table or 3x3 nested table]: The transformation/affine matrix
+center_x [number] - The X coordinate for the center of the transformation (for e.g. the center of rotation)
+center_y [number] - The Y coordinate for the center of the transformation (for e.g. the center of rotation)
+interpolation [boolean, default: true]: If true or unspecified, uses bilinear interpolation, if false it uses nearest neighbor
+
+Example:
+{
+   command = "transform",
+   buffer = 0,
+   x1 = 0, y1 = 0, x2 = 64, y2 = 64,
+   center_x = 32, center_y = 32,
+   matrix = {
+      {1,0    ,0},   -- changes to X coordinate
+      {0,1    ,0},   -- changes to Y coordinate
+      {-0.01,0.01,1} -- perspective stuff, feel free to experiment with this
+   },
+   interpolation = false
+}
