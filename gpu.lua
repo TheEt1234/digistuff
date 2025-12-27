@@ -762,8 +762,10 @@ local function runcommand(pos, meta, command)
 			return false, "Cannot create strings in shader code"
 		end
 
+		local ok, f, errmsg
+
 		-- set up the sandbox
-		local f, errmsg = loadstring(command.code)
+		f, errmsg = loadstring(command.code)
 		if not f or errmsg then return false, errmsg end
 
 		if core.global_exists("jit") then jit.off(f, true) end -- debug count hooks don't work with JIT, so turn it off for that function
@@ -822,7 +824,7 @@ local function runcommand(pos, meta, command)
 			new_buffer[y] = {}
 		end
 
-		local ok, errmsg = pcall(run_shader, env, buffer, new_buffer, f) -- nested pcall because that is how mesecons does it and i already had a nightmare bug where the debug hook somehow escaped containment and started error'ing in random functions
+		ok, errmsg = pcall(run_shader, env, buffer, new_buffer, f) -- nested pcall because that is how mesecons does it and i already had a nightmare bug where the debug hook somehow escaped containment and started error'ing in random functions
 		if not ok then return ok, errmsg end
 
 		write_buffer(meta, bufnum, new_buffer)
@@ -834,8 +836,7 @@ local function runcommand(pos, meta, command)
 		local half_matrix_size = math.floor(matrix_size / 2)
 
 		local new_buffer = { xsize = buffer.xsize, ysize = buffer.ysize }
-
-		local xsize, ysize = buffer.xsize, buffer.ysize
+		xsize, ysize = buffer.xsize, buffer.ysize
 
 		local number_buffer = {} -- a cache to avoid computing unpack_color, yes it would be wiser to just not use strings but blame the first developer that worked on the digistuff GPU, also yes this SIGNIFICANTLY speeds up calculations at least on luajit
 		for y = 1, ysize do
@@ -868,7 +869,7 @@ local function runcommand(pos, meta, command)
 		local matrix = command.matrix -- 2x2 if linear, 3x3 if affine
 		if not validate_matrix(matrix, { [2] = true, [3] = true }) then return end
 
-		local x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2, false)
+		x1, y1, x2, y2 = validate_area(buffer, command.x1, command.y1, command.x2, command.y2, false)
 		if not x1 then return end
 		local transparent = validate_color(command.transparent, "#000000")
 		local interpolation = command.interpolation
@@ -900,7 +901,7 @@ local function runcommand(pos, meta, command)
 				local new_x, new_y = transform(x - center_x, y - center_y, matrix)
 				new_x, new_y = new_x + center_x, new_y + center_y
 				if new_x == new_x and new_y == new_y then -- checking against NaN
-					local color = interpolate(buffer, cache, new_x, new_y)
+					color = interpolate(buffer, cache, new_x, new_y)
 					if color and color ~= transparent then changed_buffer[y][x] = color end
 				end
 			end
