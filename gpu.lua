@@ -317,12 +317,6 @@ local function write_buffer(meta, bufnum, buffer)
 	meta:set_string("buffer" .. bufnum, minetest.serialize(buffer))
 end
 
--- Defining functions in functions is bad for JIT so im avoiding it
-local hook = function()
-	debug.sethook()
-	error("Code ran for too many instructions.", 2)
-end
-
 local function run_shader(env, buffer, new_buffer, f)
 	local color = env.color
 	for y = 1, buffer.ysize do
@@ -353,7 +347,13 @@ local function run_shader(env, buffer, new_buffer, f)
 	end
 end
 
-local unlimited_run_shader = run_shader -- as in, there are no limits
+-- Defining functions in functions is bad in luaJIT so im avoiding it
+local hook = function()
+	debug.sethook()
+	error("Code ran for too many instructions.", 2)
+end
+
+local unlimited_run_shader = run_shader
 run_shader = function(env, buffer, new_buffer, f)
 	debug.sethook(hook, "", MAX_SHADER_INSTRUCTIONS)
 	local ok, errmsg = pcall(unlimited_run_shader, env, buffer, new_buffer, f)
@@ -365,6 +365,7 @@ local function linear_transform(x, y, matrix)
 	return (x * matrix[1][1]) + (y * matrix[1][2]), (x * matrix[2][1]) + (y * matrix[2][2])
 end
 
+-- it isn't an affine transform if you change the bottom row
 local function affine_transform(x, y, matrix)
 	local new_x = (x * matrix[1][1]) + (y * matrix[1][2]) + matrix[1][3]
 	local new_y = (x * matrix[2][1]) + (y * matrix[2][2]) + matrix[2][3]
@@ -372,7 +373,7 @@ local function affine_transform(x, y, matrix)
 	return new_x / new_z, new_y / new_z
 end
 
--- LLM disclosure: this function was made with significant help from chatGPT
+-- This function was made with significant help from chatGPT
 local function invert_2x2_matrix(matrix)
 	local a, b, c, d = matrix[1][1], matrix[1][2], matrix[2][1], matrix[2][2]
 
@@ -387,8 +388,8 @@ local function invert_2x2_matrix(matrix)
 	return new_matrix
 end
 
--- LLM disclosure: this function was made with significant help from chatGPT
--- the reason i don't have a generic invert_matrix function is because it looks a lot more complicated
+-- This function was made with significant help from chatGPT
+-- the reason i didn't make a generic invert_matrix function is because it looks a lot more complicated
 local function invert_3x3_matrix(m)
 	local a, b, c = m[1][1], m[1][2], m[1][3]
 	local d, e, f = m[2][1], m[2][2], m[2][3]
@@ -407,17 +408,25 @@ end
 
 -- Thanks wikipedia https://en.wikipedia.org/wiki/Bilinear_interpolation
 -- i hope i implemented it correctly
+-- Wikipedia says that the standard for affine transformations is bicubic interpolation but that looked too scary
 local function bilinear_interpolation(buffer, cache, x, y)
-	if buffer[y] and buffer[y][x] then return buffer[y][x] end
+	-- under luaJIT, "mixed sparse/dense tables" are Not Yet Implemented, i assume its accessing the buffer table like buffer[3.145][-2.34]
+
 	local x1, y1 = math.floor(x), math.floor(y)
 	local x2, y2 = math.ceil(x), math.ceil(y)
 	if not (buffer[y2] and buffer[y1]) then return end
+	if x1 <= 0 or y1 <= 0 then return end
+	if x1 == x2 and y1 == y2 then return buffer[y1][y2] end
 
-	local q11, q12, q21, q22 = buffer[y1][x1], buffer[y2][x1], buffer[y1][x2], buffer[y2][x2]
+	local q11, q12, q21, q22 =
+		buffer[y1][x1], --
+		buffer[y2][x1],
+		buffer[y1][x2],
+		buffer[y2][x2]
 
 	if not (q11 and q21 and q12 and q22) then return end
 
-	if q11 == q12 == q21 == q22 then return q11 end
+	if q11 == q12 and q11 == q21 and q11 == q22 then return q11 end
 
 	-- i don't want tables as i fear the performance of them might be horrible
 	local q11_r, q11_g, q11_b = unpack_color_with_cache(cache, buffer, x1, y1)
@@ -437,15 +446,11 @@ local function bilinear_interpolation(buffer, cache, x, y)
 		green = q11_g + (q21_g - q11_g) * t
 		blue = q11_b + (q21_b - q11_b) * t
 	else
-		local a, b, c, d =
-			(x2 - x) / (x2 - x1), -- (a comment was placed here so that stylua can't inline this)
-			(x - x1) / (x2 - x1),
-			(y2 - y) / (y2 - y1),
-			(y - y1) / (y2 - y1)
+		local a, b, c, d = (x2 - x) / (x2 - x1), (x - x1) / (x2 - x1), (y2 - y) / (y2 - y1), (y - y1) / (y2 - y1)
 
 		local p1, p2
 
-		-- this is for each channel, im avoiding an ipairs loop for performance
+		-- this is for each channel, im avoiding an ipairs loop so that hopefully its more performant
 
 		p1 = a * q11_r + b * q21_r
 		p2 = a * q12_r + b * q22_r
@@ -464,14 +469,18 @@ local function bilinear_interpolation(buffer, cache, x, y)
 		math.min(255, math.max(0, math.floor(red))),
 		math.min(255, math.max(0, math.floor(green))),
 		math.min(255, math.max(0, math.floor(blue)))
+
 	if red ~= red or green ~= green or blue ~= blue then -- NAN somehow?
 		return
 	end
+
 	return string.format("%02X%02X%02X", red, green, blue)
 end
 
 local function nearest_neighbor(buffer, cache, x, y)
-	if buffer[math.round(y)] then return buffer[math.round(y)][math.round(x)] end
+	local round_x, round_y = math.round(x), math.round(y)
+	if round_x <= 0 or round_y <= 0 then return end -- for JIT
+	if buffer[round_y] then return buffer[round_y][round_x] end
 end
 
 local function runcommand(pos, meta, command)
@@ -760,6 +769,7 @@ local function runcommand(pos, meta, command)
 		if core.global_exists("jit") then jit.off(f, true) end -- debug count hooks don't work with JIT, so turn it off for that function
 		-- alternatively we would have to ban loops or parse the code, or involve a lua parser into this, i dont feel like doing that.
 
+		-- The sandbox must not get access to ANY STRINGS
 		local env = {
 			math = {
 				abs = math.abs,
@@ -812,7 +822,6 @@ local function runcommand(pos, meta, command)
 			new_buffer[y] = {}
 		end
 
-		local t0 = os.clock()
 		local ok, errmsg = pcall(run_shader, env, buffer, new_buffer, f) -- nested pcall because that is how mesecons does it and i already had a nightmare bug where the debug hook somehow escaped containment and started error'ing in random functions
 		if not ok then return ok, errmsg end
 
@@ -826,7 +835,6 @@ local function runcommand(pos, meta, command)
 
 		local new_buffer = { xsize = buffer.xsize, ysize = buffer.ysize }
 
-		local t0 = os.clock()
 		local xsize, ysize = buffer.xsize, buffer.ysize
 
 		local number_buffer = {} -- a cache to avoid computing unpack_color, yes it would be wiser to just not use strings but blame the first developer that worked on the digistuff GPU, also yes this SIGNIFICANTLY speeds up calculations at least on luajit
@@ -855,7 +863,6 @@ local function runcommand(pos, meta, command)
 			end
 		end
 
-		core.debug("Convolution matrix: " .. (os.clock() - t0) * 1000) -- FIXME: DEBUG LOGGING HERE
 		write_buffer(meta, bufnum, new_buffer)
 	elseif command.command == "transform" then
 		local matrix = command.matrix -- 2x2 if linear, 3x3 if affine
@@ -883,7 +890,6 @@ local function runcommand(pos, meta, command)
 		local changed_buffer = {} -- not a buffer as it doesnt have xsize, ysize
 		local cache = {}
 
-		local t0 = os.clock()
 		for y = y1, y2 do
 			changed_buffer[y] = {}
 			cache[y] = {}
@@ -912,8 +918,6 @@ local function runcommand(pos, meta, command)
 				buffer[y][x] = changed_buffer[y][x] or buffer[y][x]
 			end
 		end
-
-		core.debug("Transform: " .. (os.clock() - t0) * 1000) -- FIXME: DEBUG LOGGING
 
 		write_buffer(meta, bufnum, buffer)
 	end
@@ -981,7 +985,7 @@ minetest.register_node("digistuff:gpu", {
 							local ok, errmsg = runcommand(pos, meta, msg[i])
 
 							if ok == false then
-								error(errmsg) -- FIXME: THIS CAN'T ERROR, IT NEEDS TO SEND BACK TO LUAC
+								digilines.receptor_send(pos, digilines.rules.default, channel, errmsg)
 							end
 						end
 					end
