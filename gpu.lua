@@ -326,13 +326,14 @@ local function run_shader(env, buffer, new_buffer, f)
 			color.r, color.g, color.b = unpack_color(buffer[y][x])
 			local r, g, b = f()
 			if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
-				return false,
+				error(
 					"You are supposed to return r,g,b where all of them are numbers, you sent: "
 						.. tostring(r)
 						.. ", "
 						.. tostring(g)
 						.. ", "
 						.. tostring(b)
+				)
 			end
 			r, g, b = -- rgb must be an integer between 0 and 255
 				math.min(255, math.max(0, math.floor(r))),
@@ -825,9 +826,11 @@ local function runcommand(pos, meta, command)
 		end
 
 		ok, errmsg = pcall(run_shader, env, buffer, new_buffer, f) -- nested pcall because that is how mesecons does it and i already had a nightmare bug where the debug hook somehow escaped containment and started error'ing in random functions
-		if not ok then return ok, errmsg end
-
-		write_buffer(meta, bufnum, new_buffer)
+		if not ok then
+			return ok, errmsg
+		else
+			write_buffer(meta, bufnum, new_buffer)
+		end
 	elseif command.command == "convolutionmatrix" then
 		local convolution_matrix = command.matrix
 		if not validate_matrix(convolution_matrix, { [3] = true, [5] = true }) then return end
