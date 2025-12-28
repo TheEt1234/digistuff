@@ -318,7 +318,6 @@ local function write_buffer(meta, bufnum, buffer)
 end
 
 local function run_shader(env, buffer, new_buffer, f)
-	local color = env.color
 	for y = 1, buffer.ysize do
 		for x = 1, buffer.xsize do
 			env.x = x
