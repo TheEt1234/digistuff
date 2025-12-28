@@ -273,10 +273,10 @@ https://en.wikipedia.org/wiki/Rotation_matrix
 
 Parameters:
 buffer [integer 0-7]: The buffer to perform the operation on.
-x1 [integer 0-64]: x1, y1, x2, y2 will be the region that the transform will operate on.
-y1 [integer 0-64]
-x2 [integer 0-64]
-y2 [integer 0-64]
+x1 [integer 1-64]: x1, y1, x2, y2 will be the region that the transform will operate on.
+y1 [integer 1-64]
+x2 [integer 1-64]
+y2 [integer 1-64]
 matrix [2x2 nested table or 3x3 nested table]: The transformation/affine matrix, feel free to experiment
 center_x [number] - The X coordinate for the center of the transformation (for example the center of a rotation), can be any number, doesn't even need to be on the buffer
 center_y [number] - The Y coordinate for the center of the transformation (for example the center of a rotation), can be any number, doesn't even need to be on the buffer
