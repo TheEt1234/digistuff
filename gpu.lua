@@ -323,7 +323,7 @@ local function run_shader(env, buffer, new_buffer, f)
 		for x = 1, buffer.xsize do
 			env.x = x
 			env.y = y
-			color.r, color.g, color.b = unpack_color(buffer[y][x])
+			env.r, env.g, env.b = unpack_color(buffer[y][x])
 			local r, g, b = f()
 			if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
 				error(
@@ -814,7 +814,10 @@ local function runcommand(pos, meta, command)
 			ysize = buffer.ysize,
 
 			-- Variables that change for each pixel:
-			color = {},
+			r = 0,
+			g = 0,
+			b = 0,
+
 			x = 0,
 			y = 0,
 		}

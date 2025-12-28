@@ -197,7 +197,9 @@ The environment of shaders (the only things avaliable in shader code):
 - ysize: the height of the buffer
 - x: The current x coordinate of the pixel that is being processed
 - y: The current y coordinate of the pixel that is being processed
-- color = {r=[0-255], g=[0-255], b=[0-255]}: the current color of the pixel being processed
+- r: The red value of the current pixel being processed
+- g: The green value of the current pixel being processed
+- b: The blue value of the current pixel being processed
 - get_color(x, y): Allows you to get a color from the buffer, returns 3 values: r, g, b
 
 If the shader code is invalid or throws an error, the digilines GPU will send the error message to digilines, under the channel that it has been configured with.
@@ -222,10 +224,10 @@ return math.random()*255, math.random()*255, math.random()*255
 
 Classic showcase of how RGB works:
 ```
-local r = 16 -- radius
+local radius = 16 -- radius, not named "r" because that would shadow the "r" global
 local dist = 10 -- distance between circles
 local cX, cY = x-(xsize/2), y-(ysize/2) -- center X, center Y
-local r2 = r^2
+local r2 = radius^2
 
 local red_circle   = r2 - (cX^2+(cY+dist)^2) -- thanks pythagoras
 local green_circle = r2 - ((cX+dist)^2+cY^2)
