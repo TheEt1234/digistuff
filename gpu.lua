@@ -758,7 +758,9 @@ local function runcommand(pos, meta, command)
 		if type(command.code) ~= "string" then return false, "No code provided" end
 		if #command.code > MAX_SHADER_CODE_LENGTH then return false, "Code too large" end
 
-		if command.code:byte(1) == 27 then return false, "No bytecode!" end -- This is technically not needed, but if someone turned off mod security (don't do that!!!!) then someone could abuse bytecode
+		-- This is technically not needed, but if someone turned off mod security (don't do that!) then someone could abuse bytecode
+		-- (mod security disallows bytecode)
+		if command.code:byte(1) == 27 then return false, "No bytecode" end
 
 		if command.code:find('"', 1, true) or command.code:find("%[=*%[") then
 			return false, "Cannot create strings in shader code"
